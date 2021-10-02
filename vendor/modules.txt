@@ -1,0 +1,6 @@
+# github.com/google/uuid v1.3.0
+## explicit
+github.com/google/uuid
+# github.com/streadway/amqp v1.0.0
+## explicit
+github.com/streadway/amqp

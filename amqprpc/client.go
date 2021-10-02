@@ -16,56 +16,28 @@ type call struct {
 }
 
 type Client struct {
-	conn    *amqp.Connection
-	ch      *amqp.Channel
-	queue   amqp.Queue
-	calls   map[string]*call
-	mu      sync.RWMutex
-	timeout time.Duration
-	done    chan struct{}
+	calls     map[string]*call
+	mu        sync.RWMutex
+	timeout   time.Duration
+	done      chan struct{}
+	transport *RobustTransport
+	log       Logger
+	queue     string
 }
 
-func NewClient(dsn string, timeout int) (cl *Client, err error) {
+func NewClient(config *Config) (cl *Client, err error) {
 	cl = new(Client)
-	cl.timeout = time.Duration(timeout) * time.Second
-
-	if cl.conn, err = amqp.Dial(dsn); err != nil {
-		return nil, err
-	}
-
-	if cl.ch, err = cl.conn.Channel(); err != nil {
-		return nil, err
-	}
-
+	cl.timeout = time.Duration(config.ClientTimeout) * time.Second
 	cl.done = make(chan struct{})
 	cl.calls = make(map[string]*call)
+	cl.queue = makeRandomQueueName()
+	cl.log = NewLogWrapper(config.Log)
 
-	if cl.queue, err = cl.ch.QueueDeclare(
-		"",    // name
-		false, // durable
-		false, // delete when unused
-		true,  // exclusive
-		false, // noWait
-		nil,   // arguments
-	); err != nil {
+	if cl.transport, err = NewTransport(config); err != nil {
 		return nil, err
 	}
 
-	msgs, err := cl.ch.Consume(
-		cl.queue.Name, // queue
-		"",            // consumer
-		true,          // auto-ack
-		false,         // exclusive
-		false,         // no-local
-		false,         // no-wait
-		nil,           // args
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	go cl.handleDeliveries(msgs)
+	cl.transport.AddSetupFunc(cl.setup)
 	return cl, nil
 }
 
@@ -98,7 +70,8 @@ func (cl *Client) handleDeliveries(msgs <-chan amqp.Delivery) {
 		select {
 		case msg, ok := <-msgs:
 			if !ok {
-				break
+				cl.log.Info("handleDeliveries stopped")
+				return
 			}
 			call := cl.getCall(msg.CorrelationId)
 
@@ -108,18 +81,51 @@ func (cl *Client) handleDeliveries(msgs <-chan amqp.Delivery) {
 			}
 
 		case <-cl.done:
-			break
+			return
 		}
 
 	}
 }
 
+func (cl *Client) setup(ch *amqp.Channel) error {
+	queue, err := ch.QueueDeclare(
+		cl.queue, // name
+		false,    // durable
+		false,    // delete when unused
+		true,     // exclusive
+		false,    // noWait
+		nil,      // arguments
+	)
+
+	if err != nil {
+		return err
+	}
+
+	msgs, err := ch.Consume(
+		queue.Name, // queue
+		"",         // consumer
+		true,       // auto-ack
+		false,      // exclusive
+		false,      // no-local
+		false,      // no-wait
+		nil,        // args
+	)
+
+	if err != nil {
+		return err
+	}
+
+	go cl.handleDeliveries(msgs)
+	return nil
+}
+
 func (cl *Client) Call(method string, msg Message) ([]byte, error) {
+	cl.log.Infof("Call rpc method: %s, message: %+v", method, msg)
 	corrId := makeCorrelationId()
 	call := cl.makeCall(corrId)
 	defer cl.removeCall(corrId)
 
-	if err := cl.ch.Publish(
+	if err := cl.transport.Publish(
 		"",     // exchange
 		method, // routing key
 		false,  // mandatory
@@ -127,7 +133,7 @@ func (cl *Client) Call(method string, msg Message) ([]byte, error) {
 		amqp.Publishing{
 			ContentType:   msg.ContentType,
 			CorrelationId: corrId,
-			ReplyTo:       cl.queue.Name,
+			ReplyTo:       cl.queue,
 			Body:          msg.Body,
 		}); err != nil {
 		return nil, err
@@ -142,6 +148,8 @@ func (cl *Client) Call(method string, msg Message) ([]byte, error) {
 }
 
 func (cl *Client) Close() error {
+	cl.log.Info("Close rpc client")
 	cl.done <- struct{}{}
-	return cl.conn.Close()
+	return cl.transport.Close()
+
 }

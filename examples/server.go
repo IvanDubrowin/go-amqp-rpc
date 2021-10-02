@@ -2,10 +2,16 @@ package main
 
 import (
 	"amqprpc/amqprpc"
-	"log"
 	"os"
 	"os/signal"
+
+	log "github.com/sirupsen/logrus"
 )
+
+func init() {
+	log.SetOutput(os.Stdout)
+	log.SetLevel(log.DebugLevel)
+}
 
 type EchoMethod struct{}
 
@@ -27,7 +33,13 @@ func (m *EchoMethod) Call(msg amqprpc.Message) amqprpc.Message {
 }
 
 func main() {
-	server, err := amqprpc.NewServer("amqp://guest:guest@localhost:5672/", "rpc", true)
+	server, err := amqprpc.NewServer(&amqprpc.Config{
+		Dsn:               "amqp://guest:guest@localhost:5672/",
+		Exchange:          "rpc.method",
+		IsDurable:         true,
+		ReconnectInterval: 5,
+		Log:               log.StandardLogger(),
+	})
 
 	if err != nil {
 		log.Fatal(err)

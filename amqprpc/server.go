@@ -2,57 +2,44 @@ package amqprpc
 
 import (
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/streadway/amqp"
 )
 
 type Server struct {
-	conn       *amqp.Connection
-	ch         *amqp.Channel
+	transport  *RobustTransport
 	queues     map[string]amqp.Queue
 	registries []*Registry
-	exchange   string
-	isDurable  bool
 	mu         sync.Mutex
+	config     *Config
+	log        Logger
 }
 
-func NewServer(dsn, exchange string, isDurable bool) (srv *Server, err error) {
+func NewServer(config *Config) (srv *Server, err error) {
 	srv = new(Server)
-	srv.exchange = exchange
-	srv.isDurable = isDurable
-
-	if srv.conn, err = amqp.Dial(dsn); err != nil {
-		return nil, err
-	}
-
-	if srv.ch, err = srv.conn.Channel(); err != nil {
-		return nil, err
-	}
-
-	if err = srv.ch.ExchangeDeclare(
-		srv.exchange,
-		amqp.ExchangeHeaders,
-		srv.isDurable,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return nil, err
-	}
-
+	srv.config = config
+	srv.log = NewLogWrapper(config.Log)
 	srv.queues = make(map[string]amqp.Queue)
+
+	if srv.transport, err = NewTransport(config); err != nil {
+		return nil, err
+	}
+
 	return srv, nil
 }
 
 func (s *Server) Setup() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.transport.AddCleanupFunc(s.cleanup)
+	return s.transport.AddSetupFunc(s.setup)
+}
+
+func (s *Server) setup(ch *amqp.Channel) error {
 	for _, r := range s.registries {
 		for name, meth := range r.GetMethods() {
-			if err := s.regMethod(name, meth); err != nil {
+			if err := s.regMethod(ch, name, meth); err != nil {
 				return err
 			}
 		}
@@ -60,9 +47,7 @@ func (s *Server) Setup() error {
 	return nil
 }
 
-func (s *Server) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Server) cleanup(ch *amqp.Channel) error {
 	for _, r := range s.registries {
 		for name, meth := range r.GetMethods() {
 			if err := s.unregMethod(name, meth); err != nil {
@@ -71,17 +56,19 @@ func (s *Server) Close() error {
 		}
 	}
 
-	for name, _ := range s.queues {
-		if err := s.ch.QueueUnbind(name, "", s.exchange, nil); err != nil {
+	for name := range s.queues {
+		if err := ch.QueueUnbind(name, "", s.config.Exchange, nil); err != nil {
 			return err
 		}
 	}
 
-	if err := s.ch.Close(); err != nil {
-		return err
-	}
+	return nil
+}
 
-	return s.conn.Close()
+func (s *Server) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transport.Close()
 }
 
 func (s *Server) AddRegistry(reg *Registry) {
@@ -90,18 +77,18 @@ func (s *Server) AddRegistry(reg *Registry) {
 	s.registries = append(s.registries, reg)
 }
 
-func (s *Server) regMethod(name string, meth Method) error {
+func (s *Server) regMethod(ch *amqp.Channel, name string, meth Method) error {
 	if err := meth.Setup(); err != nil {
 		return err
 	}
 
-	q, err := s.ch.QueueDeclare(
-		fmt.Sprintf("%s.%s", s.exchange, name), // name
-		s.isDurable,                            // durable
-		false,                                  // delete when unused
-		false,                                  // exclusive
-		false,                                  // no-wait
-		nil,                                    // arguments
+	q, err := ch.QueueDeclare(
+		fmt.Sprintf("%s.%s", s.config.Exchange, name), // name
+		s.config.IsDurable,                            // durable
+		false,                                         // delete when unused
+		false,                                         // exclusive
+		false,                                         // no-wait
+		nil,                                           // arguments
 	)
 
 	if err != nil {
@@ -110,17 +97,17 @@ func (s *Server) regMethod(name string, meth Method) error {
 
 	s.queues[q.Name] = q
 
-	if err := s.ch.QueueBind(
+	if err := ch.QueueBind(
 		q.Name,
 		"",
-		s.exchange,
+		s.config.Exchange,
 		false,
 		amqp.Table{},
 	); err != nil {
 		return err
 	}
 
-	return s.consume(q, meth)
+	return s.consume(ch, q, meth)
 }
 
 func (s *Server) unregMethod(name string, meth Method) error {
@@ -130,15 +117,15 @@ func (s *Server) unregMethod(name string, meth Method) error {
 	return nil
 }
 
-func (s *Server) consume(q amqp.Queue, meth Method) error {
-	msgs, err := s.ch.Consume(
-		q.Name,         // queue
-		meth.GetName(), // consumer
-		false,          // auto-ack
-		false,          // exclusive
-		false,          // no-local
-		false,          // no-wait
-		nil,            // args
+func (s *Server) consume(ch *amqp.Channel, q amqp.Queue, meth Method) error {
+	msgs, err := ch.Consume(
+		q.Name, // queue
+		"",     // consumer
+		false,  // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
 	)
 
 	if err != nil {
@@ -150,12 +137,13 @@ func (s *Server) consume(q amqp.Queue, meth Method) error {
 			select {
 			case inMsg, ok := <-msgs:
 				if !ok {
-					break
+					s.log.Infof("Stopped consumer: %s", q.Name)
+					return
 				}
 
 				outMsg := meth.Call(Message{inMsg.Body, inMsg.ContentType})
 
-				if err := s.ch.Publish(
+				if err := s.transport.Publish(
 					"",            // exchange
 					inMsg.ReplyTo, // routing key
 					false,         // mandatory
@@ -165,7 +153,7 @@ func (s *Server) consume(q amqp.Queue, meth Method) error {
 						CorrelationId: inMsg.CorrelationId,
 						Body:          outMsg.Body,
 					}); err != nil {
-					log.Println("Failed to publish a message")
+					s.log.Errorf("Failed to publish a message: %+v, consumer: %s", outMsg, q.Name)
 				}
 				inMsg.Ack(false)
 			}

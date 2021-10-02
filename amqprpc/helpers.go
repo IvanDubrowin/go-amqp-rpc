@@ -7,3 +7,7 @@ import (
 func makeCorrelationId() string {
 	return uuid.NewString()
 }
+
+func makeRandomQueueName() string {
+	return "queue-" + uuid.NewString()
+}

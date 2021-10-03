@@ -61,6 +61,7 @@ func main() {
 		IsDurable:         true,
 		ReconnectInterval: 5,
 		Log:               log.StandardLogger(),
+		PrefetchCount:     100,
 	})
 
 	if err != nil {

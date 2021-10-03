@@ -3,7 +3,6 @@ package main
 import (
 	"amqprpc/amqprpc"
 	"os"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -40,14 +39,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10000; i++ {
 		params := Args{A: 5, B: i}
 
 		var result Result
 		if err := client.Call("rpc.method.test__multiply", params, &result); err != nil {
 			log.Fatal(err)
 		}
-		time.Sleep(2 * time.Second)
 		log.Println(result)
 	}
 

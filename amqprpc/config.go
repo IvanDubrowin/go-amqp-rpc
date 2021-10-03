@@ -8,6 +8,7 @@ type Config struct {
 	Dsn               string
 	Exchange          string
 	IsDurable         bool
+	AutoDelete        bool
 	PrefetchCount     int
 	PrefetchSize      int
 	QosGlobal         bool

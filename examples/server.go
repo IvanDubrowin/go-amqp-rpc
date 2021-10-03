@@ -42,7 +42,12 @@ func (m *MultiplyMethod) Cleanup() error {
 func (m *MultiplyMethod) Call(body []byte) (interface{}, *amqprpc.RPCError) {
 	var params Args
 	if err := m.serializer.Unmarshal(body, &params); err != nil {
-		return nil, &amqprpc.RPCError{Type: "Unmarshal error", Message: err.Error()}
+		return nil, &amqprpc.RPCError{
+			Err: amqprpc.ErrorData{
+				Type:    "UnmarshalError",
+				Message: err.Error(),
+			},
+		}
 	}
 	res := params.A * params.B
 	log.Infof("Result: %d", res)
@@ -53,6 +58,7 @@ func main() {
 	server, err := amqprpc.NewServer(&amqprpc.Config{
 		Dsn:               "amqp://guest:guest@localhost:5672/",
 		Exchange:          "rpc.method",
+		AutoDelete:        false,
 		IsDurable:         true,
 		ReconnectInterval: 5,
 		Log:               log.StandardLogger(),

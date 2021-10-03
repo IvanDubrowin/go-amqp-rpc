@@ -2,14 +2,18 @@ package amqprpc
 
 import "fmt"
 
+type ErrorData struct {
+	Type    string   `msgpack:"type"`
+	Message string   `msgpack:"message"`
+	Args    []string `msgpack:"args"`
+}
+
 type RPCError struct {
-	Type    string `json,msgpack:"type"`
-	Message string `json,msgpack:"message"`
-	Args    string `json,msgpack:"args"`
+	Err ErrorData `msgpack:"error"`
 }
 
 func (e *RPCError) Error() string {
-	return fmt.Sprintf("type: %s, message: %s, args: %s", e.Type, e.Message, e.Args)
+	return fmt.Sprintf("type: %s, message: %s, args: %s", e.Err.Type, e.Err.Message, e.Err.Args)
 }
 
 type Method interface {

@@ -137,8 +137,8 @@ func (t *RobustTransport) init() (err error) {
 		if err = t.ch.ExchangeDeclare(
 			t.config.Exchange,
 			amqp.ExchangeHeaders,
-			t.config.IsDurable,
 			false,
+			true,
 			false,
 			false,
 			nil,

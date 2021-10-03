@@ -93,10 +93,12 @@ func (s *Server) regMethod(ch *amqp.Channel, name string, meth Method) error {
 	q, err := ch.QueueDeclare(
 		fmt.Sprintf("%s.%s", s.config.Exchange, name), // name
 		s.config.IsDurable,                            // durable
-		false,                                         // delete when unused
+		s.config.AutoDelete,                           // delete when unused
 		false,                                         // exclusive
 		false,                                         // no-wait
-		nil,                                           // arguments
+		amqp.Table{
+			"x-dead-letter-exchange": s.config.Exchange,
+		}, // arguments
 	)
 
 	if err != nil {

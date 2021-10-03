@@ -49,9 +49,9 @@ func (m *MultiplyMethod) Call(body []byte) (interface{}, *amqprpc.RPCError) {
 	if err := m.serializer.Unmarshal(body, &params); err != nil {
 		return nil, &amqprpc.RPCError{Type: "Unmarshal error", Message: err.Error()}
 	}
-	res := &Result{Result: params.A * params.B}
-	log.Infof("Result: %+v")
-	return res, nil
+	res := params.A * params.B
+	log.Infof("Result: %d", res)
+	return &Result{Result: res}, nil
 }
 
 func main() {

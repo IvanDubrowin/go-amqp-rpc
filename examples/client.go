@@ -33,7 +33,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 100; i++ {
 		params := Args{A: 5, B: i}
 
 		var result Result

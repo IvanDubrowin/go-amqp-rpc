@@ -190,14 +190,12 @@ func (s *Server) consume(ch *amqp.Channel, q amqp.Queue, meth Method) error {
 	go func(msgs <-chan amqp.Delivery) {
 		s.log.Infof("Started consumer: %s", q.Name)
 		for {
-			select {
-			case msg, ok := <-msgs:
-				if !ok {
-					s.log.Infof("Stopped consumer: %s", q.Name)
-					return
-				}
-				go s.messageHadler(msg, meth)
+			msg, ok := <-msgs
+			if !ok {
+				s.log.Infof("Stopped consumer: %s", q.Name)
+				return
 			}
+			go s.messageHadler(msg, meth)
 		}
 	}(msgs)
 

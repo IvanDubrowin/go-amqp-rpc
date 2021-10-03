@@ -1,6 +1,7 @@
 package amqprpc
 
-type Message struct {
-	Body        []byte
-	ContentType string
-}
+const (
+	RPCCallMessageType   = "call"
+	RPCResultMessageType = "result"
+	RPCErrorMessageType  = "error"
+)

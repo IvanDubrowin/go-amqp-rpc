@@ -7,16 +7,14 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type setupFunc func(ch *amqp.Channel) error
-
-type cleanupFunc func(ch *amqp.Channel) error
+type callbackFunc func(ch *amqp.Channel) error
 
 type RobustTransport struct {
 	conn         *amqp.Connection
 	ch           *amqp.Channel
 	config       *Config
-	setupFuncs   []setupFunc
-	cleanupFuncs []cleanupFunc
+	setupFuncs   []callbackFunc
+	cleanupFuncs []callbackFunc
 	mu           sync.RWMutex
 	interval     time.Duration
 	log          Logger
@@ -38,14 +36,14 @@ func NewTransport(config *Config) (t *RobustTransport, err error) {
 	return t, nil
 }
 
-func (t *RobustTransport) AddSetupFunc(f setupFunc) error {
+func (t *RobustTransport) AddSetupFunc(f callbackFunc) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.setupFuncs = append(t.setupFuncs, f)
 	return f(t.ch)
 }
 
-func (t *RobustTransport) AddCleanupFunc(f cleanupFunc) {
+func (t *RobustTransport) AddCleanupFunc(f callbackFunc) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cleanupFuncs = append(t.cleanupFuncs, f)
@@ -88,7 +86,6 @@ func (t *RobustTransport) handleReconnect() {
 	defer t.mu.Unlock()
 
 	for {
-		time.Sleep(t.interval)
 		select {
 		case <-t.done:
 			t.log.Info("Robust transport handleReconnect stopped")
@@ -96,6 +93,7 @@ func (t *RobustTransport) handleReconnect() {
 		default:
 			if err := t.recover(); err != nil {
 				t.log.Error(err)
+				time.Sleep(t.interval)
 				continue
 			} else {
 				t.log.Info("Robust connection was restored")

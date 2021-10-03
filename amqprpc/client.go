@@ -2,6 +2,7 @@ package amqprpc
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,18 +12,20 @@ import (
 var ErrTimeout = errors.New("rpc call raise timeout error")
 
 type call struct {
-	done   chan struct{}
-	result []byte
+	done    chan struct{}
+	result  []byte
+	msgType string
 }
 
 type Client struct {
-	calls     map[string]*call
-	mu        sync.RWMutex
-	timeout   time.Duration
-	done      chan struct{}
-	transport *RobustTransport
-	log       Logger
-	queue     string
+	calls      map[string]*call
+	mu         sync.RWMutex
+	timeout    time.Duration
+	done       chan struct{}
+	transport  *RobustTransport
+	serializer Serializer
+	log        Logger
+	queue      string
 }
 
 func NewClient(config *Config) (cl *Client, err error) {
@@ -32,6 +35,12 @@ func NewClient(config *Config) (cl *Client, err error) {
 	cl.calls = make(map[string]*call)
 	cl.queue = makeRandomQueueName()
 	cl.log = NewLogWrapper(config.Log)
+
+	if config.Serializer != nil {
+		cl.serializer = config.Serializer
+	} else {
+		cl.serializer = DefaultSerializer
+	}
 
 	if cl.transport, err = NewTransport(config); err != nil {
 		return nil, err
@@ -77,13 +86,13 @@ func (cl *Client) handleDeliveries(msgs <-chan amqp.Delivery) {
 
 			if call != nil {
 				call.result = msg.Body
+				call.msgType = msg.Type
 				call.done <- struct{}{}
 			}
 
 		case <-cl.done:
 			return
 		}
-
 	}
 }
 
@@ -119,11 +128,17 @@ func (cl *Client) setup(ch *amqp.Channel) error {
 	return nil
 }
 
-func (cl *Client) Call(method string, msg Message) ([]byte, error) {
-	cl.log.Infof("Call rpc method: %s, message: %+v", method, msg)
+func (cl *Client) Call(method string, params interface{}, result interface{}) error {
+	cl.log.Infof("Call rpc method: %s, params: %+v", method, params)
 	corrId := makeCorrelationId()
 	call := cl.makeCall(corrId)
 	defer cl.removeCall(corrId)
+
+	body, err := cl.serializer.Marshal(params)
+
+	if err != nil {
+		return err
+	}
 
 	if err := cl.transport.Publish(
 		"",     // exchange
@@ -131,19 +146,34 @@ func (cl *Client) Call(method string, msg Message) ([]byte, error) {
 		false,  // mandatory
 		false,  // immediate
 		amqp.Publishing{
-			ContentType:   msg.ContentType,
+			ContentType:   cl.serializer.GetContentType(),
 			CorrelationId: corrId,
 			ReplyTo:       cl.queue,
-			Body:          msg.Body,
+			Body:          body,
+			Type:          RPCCallMessageType,
 		}); err != nil {
-		return nil, err
+		return err
 	}
 
 	select {
 	case <-call.done:
-		return call.result, nil
+		switch call.msgType {
+		case RPCResultMessageType:
+			if err := cl.serializer.Unmarshal(call.result, &result); err != nil {
+				return err
+			}
+			return nil
+		case RPCErrorMessageType:
+			var rpcErr RPCError
+			if err := cl.serializer.Unmarshal(call.result, &rpcErr); err != nil {
+				return err
+			}
+			return &rpcErr
+		default:
+			return fmt.Errorf("invalid rpc message type: %s", call.msgType)
+		}
 	case <-time.After(cl.timeout):
-		return nil, ErrTimeout
+		return ErrTimeout
 	}
 }
 

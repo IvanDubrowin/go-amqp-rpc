@@ -9,6 +9,7 @@ import (
 
 type Server struct {
 	transport  *RobustTransport
+	serializer Serializer
 	queues     map[string]amqp.Queue
 	registries []*Registry
 	mu         sync.Mutex
@@ -21,6 +22,12 @@ func NewServer(config *Config) (srv *Server, err error) {
 	srv.config = config
 	srv.log = NewLogWrapper(config.Log)
 	srv.queues = make(map[string]amqp.Queue)
+
+	if config.Serializer != nil {
+		srv.serializer = config.Serializer
+	} else {
+		srv.serializer = DefaultSerializer
+	}
 
 	if srv.transport, err = NewTransport(config); err != nil {
 		return nil, err
@@ -68,6 +75,7 @@ func (s *Server) cleanup(ch *amqp.Channel) error {
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.log.Info("Close rpc server")
 	return s.transport.Close()
 }
 
@@ -78,7 +86,7 @@ func (s *Server) AddRegistry(reg *Registry) {
 }
 
 func (s *Server) regMethod(ch *amqp.Channel, name string, meth Method) error {
-	if err := meth.Setup(); err != nil {
+	if err := meth.Setup(s.serializer); err != nil {
 		return err
 	}
 
@@ -117,6 +125,53 @@ func (s *Server) unregMethod(name string, meth Method) error {
 	return nil
 }
 
+func (s *Server) messageHadler(msg amqp.Delivery, meth Method) {
+	if msg.Type != RPCCallMessageType {
+		s.log.Warnf("Invalid message type: %s", msg.Type)
+		return
+	}
+
+	result, rpcErr := meth.Call(msg.Body)
+
+	var (
+		msgType string
+		body    []byte
+		err     error
+	)
+
+	if rpcErr != nil {
+		if body, err = s.serializer.Marshal(rpcErr); err != nil {
+			s.log.Error(err)
+			return
+		}
+		msgType = RPCErrorMessageType
+	} else {
+		if body, err = s.serializer.Marshal(result); err != nil {
+			s.log.Error(err)
+			return
+		}
+		msgType = RPCResultMessageType
+	}
+
+	if err := s.transport.Publish(
+		"",          // exchange
+		msg.ReplyTo, // routing key
+		false,       // mandatory
+		false,       // immediate
+		amqp.Publishing{
+			ContentType:   s.serializer.GetContentType(),
+			CorrelationId: msg.CorrelationId,
+			Body:          body,
+			Type:          msgType,
+		}); err != nil {
+		s.log.Errorf("Failed to publish a message: %+v, rpc method name: %s", msg, meth.GetName())
+		msg.Reject(false)
+		return
+
+	}
+	msg.Ack(false)
+}
+
 func (s *Server) consume(ch *amqp.Channel, q amqp.Queue, meth Method) error {
 	msgs, err := ch.Consume(
 		q.Name, // queue
@@ -135,27 +190,12 @@ func (s *Server) consume(ch *amqp.Channel, q amqp.Queue, meth Method) error {
 	go func(msgs <-chan amqp.Delivery) {
 		for {
 			select {
-			case inMsg, ok := <-msgs:
+			case msg, ok := <-msgs:
 				if !ok {
 					s.log.Infof("Stopped consumer: %s", q.Name)
 					return
 				}
-
-				outMsg := meth.Call(Message{inMsg.Body, inMsg.ContentType})
-
-				if err := s.transport.Publish(
-					"",            // exchange
-					inMsg.ReplyTo, // routing key
-					false,         // mandatory
-					false,         // immediate
-					amqp.Publishing{
-						ContentType:   outMsg.ContentType,
-						CorrelationId: inMsg.CorrelationId,
-						Body:          outMsg.Body,
-					}); err != nil {
-					s.log.Errorf("Failed to publish a message: %+v, consumer: %s", outMsg, q.Name)
-				}
-				inMsg.Ack(false)
+				go s.messageHadler(msg, meth)
 			}
 		}
 	}(msgs)

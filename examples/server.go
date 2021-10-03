@@ -11,25 +11,47 @@ import (
 func init() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.DebugLevel)
+	log.SetFormatter(&log.TextFormatter{
+		DisableColors:   true,
+		TimestampFormat: "2006-01-02 15:04:05",
+		FullTimestamp:   true,
+	})
 }
 
-type EchoMethod struct{}
-
-func (m *EchoMethod) GetName() string {
-	return "echo"
+type Args struct {
+	A int `msgpack:"a"`
+	B int `msgpack:"b"`
 }
 
-func (m *EchoMethod) Setup() error {
+type Result struct {
+	Result int `msgpack:"result"`
+}
+
+type MultiplyMethod struct {
+	serializer amqprpc.Serializer
+}
+
+func (m *MultiplyMethod) GetName() string {
+	return "multiply"
+}
+
+func (m *MultiplyMethod) Setup(serializer amqprpc.Serializer) error {
+	m.serializer = serializer
 	return nil
 }
 
-func (m *EchoMethod) Cleanup() error {
+func (m *MultiplyMethod) Cleanup() error {
 	return nil
 }
 
-func (m *EchoMethod) Call(msg amqprpc.Message) amqprpc.Message {
-	log.Println(string(msg.Body))
-	return msg
+func (m *MultiplyMethod) Call(body []byte) (interface{}, *amqprpc.RPCError) {
+	var params Args
+	if err := m.serializer.Unmarshal(body, &params); err != nil {
+		return nil, &amqprpc.RPCError{Type: "Unmarshal error", Message: err.Error()}
+	}
+	res := &Result{Result: params.A * params.B}
+	log.Infof("Result: %+v")
+	return res, nil
 }
 
 func main() {
@@ -45,7 +67,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	meth := new(EchoMethod)
+	meth := new(MultiplyMethod)
 	registry := amqprpc.NewRegistry("test")
 	registry.AddMethod(meth)
 	server.AddRegistry(registry)

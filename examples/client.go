@@ -3,15 +3,29 @@ package main
 import (
 	"amqprpc/amqprpc"
 	"os"
-	"strconv"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
+type Args struct {
+	A int `msgpack:"a"`
+	B int `msgpack:"b"`
+}
+
+type Result struct {
+	Result int `msgpack:"result"`
+}
+
 func init() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.DebugLevel)
+	log.SetFormatter(&log.TextFormatter{
+		DisableColors:   true,
+		TimestampFormat: "2006-01-02 15:04:05",
+		FullTimestamp:   true,
+		ForceQuote:      true,
+	})
 }
 
 func main() {
@@ -26,15 +40,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < 10; i++ {
-		msg, err := client.Call("rpc.method.test__echo", amqprpc.Message{Body: []byte("test" + strconv.Itoa(i)), ContentType: "text/plain"})
-		time.Sleep(15 * time.Second)
+	for i := 0; i < 100; i++ {
+		params := Args{A: 5, B: i}
 
-		if err != nil {
+		var result Result
+		if err := client.Call("rpc.method.test__multiply", params, &result); err != nil {
 			log.Fatal(err)
 		}
-
-		log.Println(string(msg))
+		time.Sleep(2 * time.Second)
+		log.Println(result)
 	}
 
 	if err := client.Close(); err != nil {

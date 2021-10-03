@@ -12,6 +12,7 @@ type Config struct {
 	PrefetchSize      int
 	QosGlobal         bool
 	Log               Logger
+	Serializer        Serializer
 	DialConfig        amqp.Config
 	ReconnectInterval int
 	ClientTimeout     int
